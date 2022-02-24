@@ -4,61 +4,87 @@ import * as jsforce from "jsforce";
 import * as fs from "fs";
 import * as path from "path";
 
-//Access salesforce credentials
-const cred = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, "../cred.json")).toString()
-);
+type SalesforceConnectionOptions = {};
 
-//Use static class to call multiple scripts, to reduce redundant code involved with opening and closing Salesforce connections
-export abstract class SalesforceConnection {
-  constructor() {}
+function SalesforceConnection(this: any, _options: any) {
+  const seneca: any = this;
 
-  /** Opens a new connection to Salesforce instance using settings from cred. */
-  public static async open(): Promise<jsforce.Connection> {
+  seneca
+    .message("role:entity,cmd:load,name:account", load_account)
+    .message("role:entity,cmd:save,name:account ", save_account);
+
+  seneca.make("sys","user", closeConnection);
+
+  //Access salesforce credentials
+  const cred = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, "../cred.json")).toString()
+  );
+
+  async function load_account(): Promise<jsforce.Connection> {
     let conn = new jsforce.Connection({
       loginUrl: cred.instance_url,
     });
     await conn.login(cred.username, cred.password);
-    console.log("ConnectedSalesforce.");
     return conn;
   }
 
-  /** Closes an existing connection to Salesforce. */
-  public static async close(conn: any): Promise<void> {
+  async function closeConnection(conn: any): Promise<void> {
     await conn.logout();
-    console.log("Closed Connection to Salesforce.");
     return;
   }
-}
 
-//Updating data in salesforce
-
-const soql = `
+  const soql = `
     SELECT Id,
     Name
     FROM Account`;
 
-//Query data from Salesforce
-async () => {
-  const conn = await SalesforceConnection.open();
-  const accounts = await conn.query(soql);
-  console.log(`${accounts.totalSize} records returned from Salesforce.`);
+  async function save_account(this: any, msg: any) {
+    const conn = await load_account();
+    const accounts = await conn.query(soql);
+    console.log(`${accounts.totalSize} records returned from Salesforce.`);
 
-  const accountToUpdate: any = accounts.records.find(
-    (x: any) => x.Name === "Testing Account Name" //This is an actual acc name from your salesforce connected app
-  );
-
-  //Update & save some fields record on the Account entity
-  if (accountToUpdate) {
-    const resp: any = await conn
-      .sobject("Account")
-      .update({ Id: accountToUpdate.Id, Name: "Voxgig Tech Comp" }); 
-    console.log(resp);
-    if (resp.success) {
-      console.log(`Record with id ${resp.id} updated successfully.`);
-    } else {
-      console.error(resp.errors[0]);
+    const accountToUpdate: any = accounts.records.find(
+      (x: any) => x.Name === "Testing Account Name"
+    );
+    if (accountToUpdate) {
+      const response: any = await conn
+        .sobject("Account")
+        .update({ Id: accountToUpdate.Id, Name: "Voxgig Tech Comp" });
+      if (response.success) {
+        let data: any = response.data;
+        console.log(data);
+      } else {
+        console.error(response.errors[0]);
+      }
     }
+    closeConnection(conn);
   }
-  SalesforceConnection.close(conn);
+
+  seneca.prepare(async function (this: any) {
+    let out = await this.post(
+      "sys:provider,get:key,provider:salesforce,key:api"
+    );
+    if (!out.ok) {
+      this.fail("api-key-missing");
+    }
+
+    let config = {
+      auth: out.value,
+    };
+
+    return config;
+  });
+}
+
+// Default options.
+const defaults: SalesforceConnectionOptions = {
+  debugger: false,
 };
+
+Object.assign(SalesforceConnection, { defaults });
+
+export default SalesforceConnection;
+
+if ("undefined" !== typeof module) {
+  module.exports = SalesforceConnection;
+}
